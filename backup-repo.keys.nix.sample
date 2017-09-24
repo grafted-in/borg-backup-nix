@@ -1,0 +1,7 @@
+{ serverTag }:
+{
+  host = "backup.com";
+  user = "myuser";
+  path = "some/path/${serverTag}";
+  borgPassword = "a good password";
+}

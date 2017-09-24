@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+
+# Provisions a server with SSH keys to store backups to a remote backup server.
+# Arguments: <name-of-nixops-deployment>
+#            <machine-name>
+#            <name-of-backup-user>
+#            <remote-host>
+#            <remote-user>
+
+set -e
+
+repo_root=$(git rev-parse --show-toplevel)  # Use Git to find repo root.
+
+: "${deployment_manager:=$repo_root/deploy/manage}"
+echo "Using deployment manager: $deployment_manager"
+
+: "${deployment:=${1:?1st argument: name of a NixOps deployment}}"
+: "${machine_name:=${2:?2nd argument: name of the machine in the deployment}}"
+: "${backup_user:=${3:?3rd argument: name of the backup user on the server}}"
+: "${remote_host:=${4:?4th argument: remote host for SSH login}}"
+: "${remote_user:=${5:?5th argument: user on remote host for SSH login}}"
+: "${ssh_key_type:=ed25519}"
+
+ssh_id_file_name="id_${ssh_key_type}_${remote_user}_${remote_host}";
+ssh_id_comment="${backup_user}@${machine_name} [${deployment}]: ${remote_user}@${remote_host}";
+
+
+###############################################################################
+# MAKE SSH KEYS
+echo "Creating SSH identity at $ssh_id_file_name."
+ssh-keygen -t "$ssh_key_type" -f "$ssh_id_file_name" -N "" -C "$ssh_id_comment"
+
+ssh_remote="${remote_user}@${remote_host}"
+
+echo "You may be asked to enter your password for $ssh_remote a few times."
+
+if authorized_keys=$(ssh "$ssh_remote" 'cat .ssh/authorized_keys'); then
+  if echo "$authorized_keys" | grep -q -f "$ssh_id_file_name.pub"; then
+    echo "Remote server already authorizes $ssh_id_file_name."
+  else
+    echo "Adding ${ssh_id_file_name}.pub to remote authorizated keys."
+    ssh "$ssh_remote" 'dd of=.ssh/authorized_keys oflag=append conv=notrunc' < "$ssh_id_file_name.pub"
+  fi
+else
+  echo 'Remote server has no authorized keys. Initializing now.'
+  scp "$ssh_id_file_name.pub" "$ssh_remote:.ssh/authorized_keys"
+fi
+
+
+###############################################################################
+# INSTALL KEYS ON REMOTE SERVER
+manage="$deployment_manager $deployment"
+ssh="$manage ssh ${machine_name}"
+scp="$manage scp ${machine_name}"
+
+backup_user_home=$($ssh " su -c 'echo \$HOME' \"$backup_user\" ")
+echo ">> Backup user $backup_user has HOME at $backup_user_home"
+
+$ssh "mkdir -p $backup_user_home/.ssh"
+$scp "${ssh_id_file_name}"     --to "$backup_user_home/.ssh/${ssh_id_file_name}"
+$scp "${ssh_id_file_name}.pub" --to "$backup_user_home/.ssh/${ssh_id_file_name}.pub"
+
+$ssh <<BASH
+touch "$backup_user_home/.ssh/config"
+
+if grep -q "Host $remote_host" "$backup_user_home/.ssh/config"; then
+  echo 'WARNING: ~/.ssh/config already has an entry for $remote_host; not adding another one.'
+else
+  touch "$backup_user_home/known_hosts"
+  ssh-keyscan -H '$remote_host' >> "$backup_user_home/.ssh/known_hosts"
+
+  cat >> "$backup_user_home/.ssh/config" <<'CONF'
+
+    Host $remote_host
+      User $remote_user
+      IdentityFile ~/.ssh/$ssh_id_file_name
+      IdentitiesOnly yes
+CONF
+fi
+
+chown -R '${backup_user}' "$backup_user_home/.ssh"
+chmod 600 "$backup_user_home/.ssh/$ssh_id_file_name"
+BASH
+
+# Test: SSH into the server and then SSH into the backup server from there.
+$ssh "su -c 'ssh ${remote_host} echo SSH authentication successful.' '${backup_user}'"
