@@ -12,7 +12,12 @@ set -e
 repo_root=$(git rev-parse --show-toplevel)  # Use Git to find repo root.
 
 : "${deployment_manager:=$repo_root/deploy/manage}"
-echo "Using deployment manager: $deployment_manager"
+if [ -f "$deployment_manager" ]; then
+  echo "Using deployment manager: $deployment_manager"
+else
+  echo "Could not find deployment manager at $deployment_manager. Please set \$deployment_manager to point to yours."
+  exit 1
+fi
 
 : "${deployment:=${1:?1st argument: name of a NixOps deployment}}"
 : "${machine_name:=${2:?2nd argument: name of the machine in the deployment}}"
@@ -27,8 +32,12 @@ ssh_id_comment="${backup_user}@${machine_name} [${deployment}]: ${remote_user}@$
 
 ###############################################################################
 # MAKE SSH KEYS
-echo "Creating SSH identity at $ssh_id_file_name."
-ssh-keygen -t "$ssh_key_type" -f "$ssh_id_file_name" -N "" -C "$ssh_id_comment"
+if [ -f "$ssh_id_file_name" ]; then
+  echo "Using existing SSH keys at $ssh_id_file_name".
+else
+  echo "Creating SSH identity at $ssh_id_file_name."
+  ssh-keygen -t "$ssh_key_type" -f "$ssh_id_file_name" -N "" -C "$ssh_id_comment"
+fi
 
 ssh_remote="${remote_user}@${remote_host}"
 
